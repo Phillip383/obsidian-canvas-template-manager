@@ -28,42 +28,6 @@ export default class TemplateGen extends Plugin {
     const statusBarItemEl = this.addStatusBarItem();
     statusBarItemEl.setText("Status bar text");
 
-    this.addCommand({
-      id: "open-modal-simple",
-      name: "Open modal (simple)",
-      callback: () => {
-        new TemplateGenModal(this.app, this).open();
-      },
-    });
-
-    this.addCommand({
-      id: "replace-selected",
-      name: "Replace selected content",
-      editorCallback: (
-        editor: Editor,
-        _ctx: MarkdownView | MarkdownFileInfo,
-      ) => {
-        editor.replaceSelection("Sample editor command");
-      },
-    });
-
-    this.addCommand({
-      id: "open-modal-complex",
-      name: "Open modal (complex)",
-      checkCallback: (checking: boolean) => {
-        const markdownView =
-          this.app.workspace.getActiveViewOfType(MarkdownView);
-        if (markdownView) {
-          if (!checking) {
-            new TemplateGenModal(this.app, this).open();
-          }
-
-          return true;
-        }
-        return false;
-      },
-    });
-
     this.addSettingTab(new SettingTab(this.app, this));
 
     this.registerDomEvent(activeDocument, "click", (_evt: MouseEvent) => {
@@ -176,7 +140,6 @@ class TemplateGenModal extends Modal {
       .addText((text) => {
         this.destinationInput = text;
         text.setPlaceholder("templates/created");
-        text.setValue("templates");
       });
 
     this.canvasTagSection = contentEl.createDiv({
