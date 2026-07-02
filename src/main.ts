@@ -94,6 +94,8 @@ class TemplateGenModal extends Modal {
   private destinationInput: TextComponent | null = null;
   private suffixLabel: HTMLSpanElement | null = null;
   private generateButton: HTMLButtonElement | null = null;
+  private canvasTagSection: HTMLDivElement | null = null;
+  private cardTagInputs: Array<{ cardName: string; input: TextComponent }> = [];
 
   constructor(app: App, plugin: TemplateGen) {
     super(app);
@@ -145,6 +147,7 @@ class TemplateGenModal extends Modal {
           this.selectedTemplate =
             this.templates.find((template) => template.path === value) ?? null;
           this.updateNamePreview();
+          void this.renderCanvasTagSection();
         });
       });
 
@@ -175,6 +178,11 @@ class TemplateGenModal extends Modal {
         text.setPlaceholder("templates/created");
         text.setValue("templates");
       });
+
+    this.canvasTagSection = contentEl.createDiv({
+      cls: "template-gen-card-tags",
+    });
+    await this.renderCanvasTagSection();
 
     const buttonRow = contentEl.createDiv({ cls: "modal-button-container" });
     this.generateButton = buttonRow.createEl("button", {
@@ -267,9 +275,199 @@ class TemplateGenModal extends Modal {
       await this.ensureFolder(parentPath);
     }
 
-    await this.app.vault.copy(this.selectedTemplate, targetPath);
+    const copiedFile = await this.app.vault.copy(
+      this.selectedTemplate,
+      targetPath,
+    );
+    await this.applyCardTags(copiedFile);
     new Notice(`Template copied to ${targetPath}`);
     this.close();
+  }
+
+  private async renderCanvasTagSection() {
+    if (!this.canvasTagSection) {
+      return;
+    }
+
+    this.canvasTagSection.empty();
+    this.cardTagInputs = [];
+
+    if (
+      !this.selectedTemplate ||
+      this.selectedTemplate.extension !== "canvas"
+    ) {
+      return;
+    }
+
+    const matchingRules = this.plugin.settings.cardTagRules.filter(
+      (rule) => rule.cardName.trim().length > 0,
+    );
+
+    if (matchingRules.length === 0) {
+      this.canvasTagSection.createEl("p", {
+        text: "Add card-name rules in Settings to enable canvas card tagging.",
+      });
+      return;
+    }
+
+    const canvasData = await this.readCanvasData(this.selectedTemplate);
+    if (!canvasData) {
+      this.canvasTagSection.createEl("p", {
+        text: "Unable to read canvas data for this template.",
+      });
+      return;
+    }
+
+    const matchedRules = matchingRules.filter((rule) =>
+      this.findMatchingCanvasCard(canvasData, rule.cardName),
+    );
+
+    if (matchedRules.length === 0) {
+      this.canvasTagSection.createEl("p", {
+        text: "No configured card names were found in this canvas template.",
+      });
+      return;
+    }
+
+    this.canvasTagSection.createEl("h3", { text: "Canvas card tags" });
+
+    matchedRules.forEach((rule) => {
+      new Setting(this.canvasTagSection!)
+        .setName(`Tags for "${rule.cardName}"`)
+        .setDesc("Enter tags as a comma-separated list")
+        .addText((text) => {
+          text.setPlaceholder("tag1, tag2");
+          text.setValue(rule.tags.join(", "));
+          this.cardTagInputs.push({ cardName: rule.cardName, input: text });
+        });
+    });
+  }
+
+  private async readCanvasData(
+    file: TFile,
+  ): Promise<Record<string, any> | null> {
+    try {
+      const content = await this.app.vault.cachedRead(file);
+      return JSON.parse(content) as Record<string, any>;
+    } catch (error) {
+      console.error("Failed to read canvas data", error);
+      return null;
+    }
+  }
+
+  private findMatchingCanvasCard(
+    canvasData: Record<string, any>,
+    cardName: string,
+  ): boolean {
+    const normalizedCardName = cardName.trim().toLowerCase();
+    const nodes = Array.isArray(canvasData.nodes) ? canvasData.nodes : [];
+
+    return nodes.some((node) => {
+      const candidateNames = this.getCanvasNodeNames(node);
+      return candidateNames.some(
+        (candidate) => candidate.toLowerCase() === normalizedCardName,
+      );
+    });
+  }
+
+  private getCanvasNodeNames(node: Record<string, any>): string[] {
+    const names = new Set<string>();
+    const text = typeof node?.text === "string" ? node.text.trim() : "";
+
+    if (text) {
+      names.add(text);
+
+      const headingMatch = text.match(/^#{1,6}\s*(.+)$/m);
+      if (headingMatch?.[1]) {
+        names.add(headingMatch[1].trim());
+      }
+    }
+
+    if (typeof node?.label === "string" && node.label.trim()) {
+      names.add(node.label.trim());
+    }
+
+    if (typeof node?.file === "string" && node.file.trim()) {
+      const fileName = node.file.split("/").pop() ?? node.file;
+      const withoutExtension = fileName.includes(".")
+        ? fileName.substring(0, fileName.lastIndexOf("."))
+        : fileName;
+      if (withoutExtension) {
+        names.add(withoutExtension);
+      }
+    }
+
+    return Array.from(names);
+  }
+
+  private async applyCardTags(file: TFile): Promise<void> {
+    if (file.extension !== "canvas") {
+      return;
+    }
+
+    const canvasData = await this.readCanvasData(file);
+    if (!canvasData) {
+      return;
+    }
+
+    const nodes = Array.isArray(canvasData.nodes) ? canvasData.nodes : [];
+    let changed = false;
+
+    for (const entry of this.cardTagInputs) {
+      const tags = entry.input
+        .getValue()
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean);
+
+      if (tags.length === 0) {
+        continue;
+      }
+
+      for (const node of nodes) {
+        const candidateNames = this.getCanvasNodeNames(node);
+        const isMatch = candidateNames.some(
+          (candidate) =>
+            candidate.toLowerCase() === entry.cardName.trim().toLowerCase(),
+        );
+
+        if (!isMatch) {
+          continue;
+        }
+
+        const updatedText = this.appendTagsToNodeText(node, tags);
+        if (updatedText !== node.text) {
+          node.text = updatedText;
+          changed = true;
+        }
+      }
+    }
+
+    if (changed) {
+      await this.app.vault.modify(file, JSON.stringify(canvasData, null, 2));
+    }
+  }
+
+  private appendTagsToNodeText(
+    node: Record<string, any>,
+    tags: string[],
+  ): string {
+    const tagLines = Array.from(new Set(tags))
+      .map((tag) => `#${tag}`)
+      .join("\n");
+
+    const currentText = typeof node?.text === "string" ? node.text : "";
+    if (!tagLines) {
+      return currentText;
+    }
+
+    const trimmedText = currentText.trimEnd();
+    if (!trimmedText) {
+      return `${tagLines}\n`;
+    }
+
+    const separator = trimmedText.endsWith("\n") ? "" : "\n";
+    return `${trimmedText}${separator}\n${tagLines}\n`;
   }
 
   private getParentPath(targetPath: string): string {

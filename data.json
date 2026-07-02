@@ -1,3 +1,9 @@
 {
-  "templateDirectory": "templates"
+  "templateDirectory": "templates",
+  "cardTagRules": [
+    {
+      "cardName": "Meta",
+      "tags": []
+    }
+  ]
 }
