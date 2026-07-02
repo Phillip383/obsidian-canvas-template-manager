@@ -42,7 +42,7 @@ export class SettingTab extends PluginSettingTab {
           }),
       );
 
-    containerEl.createEl("h3", { text: "Canvas card tags" });
+    new Setting(containerEl).setName("Canvas card tags").setHeading();
     containerEl.createEl("p", {
       text: "Define card names and the tags to apply when generating a template from a canvas.",
     });
