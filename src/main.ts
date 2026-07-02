@@ -1,14 +1,19 @@
 import {
+  App,
+  DropdownComponent,
   Editor,
   MarkdownView,
   MarkdownFileInfo,
   Modal,
   Notice,
   Plugin,
+  Setting,
+  TFile,
+  TFolder,
+  TextComponent,
+  normalizePath,
 } from "obsidian";
 import { DEFAULT_SETTINGS, PluginSettings, SettingTab } from "./settings";
-
-// Remember to rename these classes and interfaces!
 
 export default class TemplateGen extends Plugin {
   settings!: PluginSettings;
@@ -16,25 +21,21 @@ export default class TemplateGen extends Plugin {
   async onload() {
     await this.loadSettings();
 
-    // This creates an icon in the left ribbon.
     this.addRibbonIcon("dice", "Sample", (_evt: MouseEvent) => {
-      // Called when the user clicks the icon.
       new Notice("This is a notice!");
     });
 
-    // This adds a status bar item to the bottom of the app. Does not work on mobile apps.
     const statusBarItemEl = this.addStatusBarItem();
     statusBarItemEl.setText("Status bar text");
 
-    // This adds a simple command that can be triggered anywhere
     this.addCommand({
       id: "open-modal-simple",
       name: "Open modal (simple)",
       callback: () => {
-        new TemplateGenModal(this.app).open();
+        new TemplateGenModal(this.app, this).open();
       },
     });
-    // This adds an editor command that can perform some operation on the current editor instance
+
     this.addCommand({
       id: "replace-selected",
       name: "Replace selected content",
@@ -45,42 +46,29 @@ export default class TemplateGen extends Plugin {
         editor.replaceSelection("Sample editor command");
       },
     });
-    // This adds a complex command that can check whether the current state of the app allows execution of the command
+
     this.addCommand({
       id: "open-modal-complex",
       name: "Open modal (complex)",
       checkCallback: (checking: boolean) => {
-        // Conditions to check
         const markdownView =
           this.app.workspace.getActiveViewOfType(MarkdownView);
         if (markdownView) {
-          // If checking is true, we're simply "checking" if the command can be run.
-          // If checking is false, then we want to actually perform the operation.
           if (!checking) {
-            new TemplateGenModal(this.app).open();
+            new TemplateGenModal(this.app, this).open();
           }
 
-          // This command will only show up in Command Palette when the check function returns true
           return true;
         }
         return false;
       },
     });
 
-    // This adds a settings tab so the user can configure various aspects of the plugin
     this.addSettingTab(new SettingTab(this.app, this));
 
-    // If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-    // Using this function will automatically remove the event listener when this plugin is disabled.
     this.registerDomEvent(activeDocument, "click", (_evt: MouseEvent) => {
       new Notice("Click");
     });
-
-    //TODO: Come back to the interval...
-    // When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-    // this.registerInterval(
-    //   window.setInterval(() => console.log("setInterval"), 5 * 60 * 1000),
-    // );
   }
 
   onunload() {}
@@ -99,13 +87,211 @@ export default class TemplateGen extends Plugin {
 }
 
 class TemplateGenModal extends Modal {
-  onOpen() {
+  private plugin: TemplateGen;
+  private templates: TFile[] = [];
+  private selectedTemplate: TFile | null = null;
+  private nameInput: TextComponent | null = null;
+  private destinationInput: TextComponent | null = null;
+  private suffixLabel: HTMLSpanElement | null = null;
+  private generateButton: HTMLButtonElement | null = null;
+
+  constructor(app: App, plugin: TemplateGen) {
+    super(app);
+    this.plugin = plugin;
+  }
+
+  async onOpen() {
     const { contentEl } = this;
-    contentEl.setText("Woah!");
+    contentEl.empty();
+    contentEl.addClass("template-gen-modal");
+    contentEl.createEl("h2", { text: "Generate template" });
+
+    const directoryPath = normalizePath(
+      this.plugin.settings.templateDirectory || "templates",
+    );
+    const directory = this.app.vault.getAbstractFileByPath(directoryPath);
+
+    if (!directory || !(directory instanceof TFolder)) {
+      contentEl.createEl("p", {
+        text: `No template directory was found at "${directoryPath}".`,
+      });
+      return;
+    }
+
+    this.templates = directory.children
+      .filter((child): child is TFile => child instanceof TFile)
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    if (this.templates.length === 0) {
+      contentEl.createEl("p", {
+        text: `No templates were found in "${directoryPath}".`,
+      });
+      return;
+    }
+
+    this.selectedTemplate = this.templates[0] ?? null;
+
+    new Setting(contentEl)
+      .setName("Template")
+      .setDesc("Choose a template from the configured template directory")
+      .addDropdown((dropdown: DropdownComponent) => {
+        this.templates.forEach((template) => {
+          dropdown.addOption(template.path, template.name);
+        });
+        if (this.selectedTemplate) {
+          dropdown.setValue(this.selectedTemplate.path);
+        }
+        dropdown.onChange((value) => {
+          this.selectedTemplate =
+            this.templates.find((template) => template.path === value) ?? null;
+          this.updateNamePreview();
+        });
+      });
+
+    new Setting(contentEl)
+      .setName("New template name")
+      .setDesc("Enter the new name without changing the file type")
+      .addText((text) => {
+        this.nameInput = text;
+        text.setPlaceholder("my-template");
+        text.inputEl.addClass("template-gen-name-input");
+        text.onChange(() => this.updateNamePreview());
+      })
+      .controlEl.createDiv({ cls: "template-gen-suffix" });
+
+    const suffixWrapper = contentEl.querySelector(
+      ".template-gen-suffix",
+    ) as HTMLDivElement | null;
+    if (suffixWrapper) {
+      suffixWrapper.createEl("span", { text: "File type:" });
+      this.suffixLabel = suffixWrapper.createEl("span", { text: "" });
+    }
+
+    new Setting(contentEl)
+      .setName("Destination path")
+      .setDesc("Relative path where the new template should be created")
+      .addText((text) => {
+        this.destinationInput = text;
+        text.setPlaceholder("templates/created");
+        text.setValue("templates");
+      });
+
+    const buttonRow = contentEl.createDiv({ cls: "modal-button-container" });
+    this.generateButton = buttonRow.createEl("button", {
+      text: "Generate",
+      cls: "mod-cta",
+    });
+    this.generateButton.disabled = true;
+
+    this.generateButton.addEventListener("click", () => {
+      void this.handleGenerate();
+    });
+
+    this.updateNamePreview();
   }
 
   onClose() {
     const { contentEl } = this;
     contentEl.empty();
+  }
+
+  private updateNamePreview() {
+    if (!this.selectedTemplate) {
+      return;
+    }
+
+    const suffix = this.getTemplateSuffix(this.selectedTemplate);
+    if (this.suffixLabel) {
+      this.suffixLabel.textContent = suffix;
+    }
+
+    const nameValue = this.nameInput?.getValue().trim() ?? "";
+    if (this.generateButton) {
+      this.generateButton.disabled = nameValue.length === 0;
+    }
+  }
+
+  private getTemplateSuffix(template: TFile): string {
+    const lastDotIndex = template.name.lastIndexOf(".");
+    if (lastDotIndex > 0) {
+      return template.name.slice(lastDotIndex);
+    }
+    return "";
+  }
+
+  private async handleGenerate() {
+    if (!this.selectedTemplate) {
+      new Notice("Select a template first.");
+      return;
+    }
+
+    const nameInput = this.nameInput?.getValue().trim() ?? "";
+    const destinationInput = this.destinationInput?.getValue().trim() ?? "";
+
+    if (!nameInput) {
+      new Notice("Enter a new template name.");
+      return;
+    }
+
+    if (!destinationInput) {
+      new Notice("Enter a destination path.");
+      return;
+    }
+
+    const safeName = nameInput
+      .replace(/\.[^./\\]+$/, "")
+      .replace(/[\\/]/g, "")
+      .trim();
+
+    if (!safeName) {
+      new Notice("Enter a valid template name.");
+      return;
+    }
+
+    const suffix = this.getTemplateSuffix(this.selectedTemplate);
+    const normalizedDestination = normalizePath(destinationInput);
+    const destinationFileName = `${safeName}${suffix}`;
+    const isFileLikePath =
+      normalizedDestination.split("/").pop()?.includes(".") ?? false;
+    const targetPath = isFileLikePath
+      ? normalizedDestination
+      : `${normalizedDestination}/${destinationFileName}`;
+
+    if (this.app.vault.getAbstractFileByPath(targetPath)) {
+      new Notice("A file already exists at that path.");
+      return;
+    }
+
+    const parentPath = this.getParentPath(targetPath);
+    if (parentPath) {
+      await this.ensureFolder(parentPath);
+    }
+
+    await this.app.vault.copy(this.selectedTemplate, targetPath);
+    new Notice(`Template copied to ${targetPath}`);
+    this.close();
+  }
+
+  private getParentPath(targetPath: string): string {
+    const segments = targetPath.split("/").filter(Boolean);
+    if (segments.length <= 1) {
+      return "";
+    }
+
+    return segments.slice(0, -1).join("/");
+  }
+
+  private async ensureFolder(folderPath: string): Promise<void> {
+    const existing = this.app.vault.getAbstractFileByPath(folderPath);
+    if (existing) {
+      return;
+    }
+
+    const parentPath = this.getParentPath(folderPath);
+    if (parentPath) {
+      await this.ensureFolder(parentPath);
+    }
+
+    await this.app.vault.createFolder(folderPath);
   }
 }
