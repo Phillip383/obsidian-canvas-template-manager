@@ -21,8 +21,8 @@ export default class TemplateGen extends Plugin {
   async onload() {
     await this.loadSettings();
 
-    this.addRibbonIcon("dice", "Sample", (_evt: MouseEvent) => {
-      new Notice("This is a notice!");
+    this.addRibbonIcon("copy", "Generate from template", (_evt: MouseEvent) => {
+      new TemplateGenModal(this.app, this).open();
     });
 
     const statusBarItemEl = this.addStatusBarItem();
