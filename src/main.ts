@@ -55,7 +55,7 @@ class TemplateGenModal extends Modal {
   private templates: TFile[] = [];
   private selectedTemplate: TFile | null = null;
   private nameInput: TextComponent | null = null;
-  private destinationInput: TextComponent | null = null;
+  private destinationInput: DropdownComponent | null = null;
   private suffixLabel: HTMLSpanElement | null = null;
   private generateButton: HTMLButtonElement | null = null;
   private canvasTagSection: HTMLDivElement | null = null;
@@ -134,12 +134,16 @@ class TemplateGenModal extends Modal {
       this.suffixLabel = suffixWrapper.createEl("span", { text: "" });
     }
 
+    const allFolders = this.getAllFolders();
     new Setting(contentEl)
       .setName("Destination path")
-      .setDesc("Relative path where the new template should be created")
-      .addText((text) => {
-        this.destinationInput = text;
-        text.setPlaceholder("templates/created");
+      .setDesc("Choose a folder from the vault where the new template should be created")
+      .addDropdown((dropdown) => {
+        this.destinationInput = dropdown;
+        allFolders.forEach((fp) => dropdown.addOption(fp, fp === "/" ? "/ (Vault root)" : fp));
+        if (allFolders.length > 0) {
+          dropdown.setValue(allFolders[0] as string);
+        }
       });
 
     this.canvasTagSection = contentEl.createDiv({
@@ -224,9 +228,9 @@ class TemplateGenModal extends Modal {
     const destinationFileName = `${safeName}${suffix}`;
     const isFileLikePath =
       normalizedDestination.split("/").pop()?.includes(".") ?? false;
-    const targetPath = isFileLikePath
+    const targetPath = normalizePath(isFileLikePath
       ? normalizedDestination
-      : `${normalizedDestination}/${destinationFileName}`;
+      : `${normalizedDestination}/${destinationFileName}`);
 
     if (this.app.vault.getAbstractFileByPath(targetPath)) {
       new Notice("A file already exists at that path.");
@@ -440,6 +444,25 @@ class TemplateGenModal extends Modal {
     }
 
     return segments.slice(0, -1).join("/");
+  }
+
+  private getAllFolders(): string[] {
+    const root = this.app.vault.getRoot() as TFolder;
+    const folders: string[] = ["/"];
+
+    const walk = (folder: TFolder) => {
+      if (folder.path && folder.path !== "/") {
+        folders.push(folder.path);
+      }
+      for (const child of folder.children) {
+        if (child instanceof TFolder) {
+          walk(child as TFolder);
+        }
+      }
+    };
+
+    walk(root);
+    return folders.sort();
   }
 
   private async ensureFolder(folderPath: string): Promise<void> {
