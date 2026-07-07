@@ -1,7 +1,7 @@
 {
   "id": "canvas-template-manager",
   "name": "Canvas Template Manager",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "minAppVersion": "1.8.7",
   "description": "Allows the ability to easily duplicate templates.",
   "author": "Phillip Wood",
